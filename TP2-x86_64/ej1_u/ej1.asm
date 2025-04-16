@@ -1,4 +1,5 @@
-; /** defines bool y puntero **/
+; -----------------------------------------
+; DEFINES
 %define NULL 0
 %define TRUE 1
 %define FALSE 0
@@ -12,7 +13,6 @@ global string_proc_node_create_asm
 global string_proc_list_add_node_asm
 global string_proc_list_concat_asm
 
-; Funciones externas utilizadas
 extern malloc
 extern free
 extern str_concat
@@ -20,144 +20,166 @@ extern strlen
 extern strcpy
 
 ; ------------------------------------------------
-
+; string_proc_list_create_asm
+; ------------------------------------------------
 string_proc_list_create_asm:
-    mov rdi, 16             ; Reservamos 16 bytes (first + last)
+    mov rdi, 16             ; Reservamos 16 bytes para list (first + last)
     call malloc
-    test rax, rax           ; Verificamos si malloc falló
-    je .devolver_null
+    test rax, rax
+    je .return_null
 
     ; Inicializamos list->first = NULL y list->last = NULL
     mov qword [rax], 0
     mov qword [rax + 8], 0
-
     ret
 
-.devolver_null:
-    xor rax, rax            ; Devuelve NULL
+.return_null:
+    xor rax, rax
     ret
 
 ; ------------------------------------------------
-
+; string_proc_node_create_asm
+; uint8_t type (en RDI), char* hash (en RSI)
+; Devuelve puntero a nodo o NULL
+; ------------------------------------------------
 string_proc_node_create_asm:
-    mov r8b, dil            ; Guardamos tipo en r8b
-    mov r9, rsi             ; Guardamos hash en r9
+    push rbp
+    mov rbp, rsp
+    sub rsp, 16             ; Alineamos stack para malloc
 
-    mov rdi, 32             ; Reservamos 32 bytes para el nodo
+    ; Verificamos si el hash es NULL
+    test rsi, rsi
+    je .return_null
+
+    ; Guardamos valores de entrada
+    movzx r8d, dil          ; r8d ← tipo
+    mov r9, rsi             ; r9 ← hash
+
+    ; malloc(32)
+    mov edi, 32
     call malloc
     test rax, rax
-    je .devolver_null
+    je .return_null
 
-    ; Inicializamos los campos del nodo
+    ; rax tiene puntero al nuevo nodo
     mov qword [rax], 0          ; next = NULL
     mov qword [rax + 8], 0      ; prev = NULL
     mov byte [rax + 16], r8b    ; type
     mov qword [rax + 24], r9    ; hash
 
+    add rsp, 16
+    pop rbp
     ret
 
-.devolver_null:
-    xor rax, rax                ; Devuelve NULL
+.return_null:
+    xor rax, rax
+    add rsp, 16
+    pop rbp
     ret
 
 ; ------------------------------------------------
-
+; string_proc_list_add_node_asm
+; rdi = lista, rsi = tipo, rdx = hash
+; ------------------------------------------------
 string_proc_list_add_node_asm:
-    mov rbx, rdi            ; Guardamos lista en rbx
+    push rbx
+    mov rbx, rdi
 
-    ; Creamos el nodo
+    ; Crear nodo
     mov rdi, rsi            ; tipo
     mov rsi, rdx            ; hash
     call string_proc_node_create_asm
     test rax, rax
-    jz .fin                 ; Si fallo, terminamos
+    jz .done
 
     ; RAX = nuevo nodo, RBX = lista
     mov rcx, [rbx]          ; rcx = list->first
     test rcx, rcx
-    jnz .al_final         ; Si no es NULL, lista no vacía
+    jnz .append
 
-    ; Lista vacía: first y last apuntan al nuevo nodo
-    mov [rbx], rax
-    mov [rbx + 8], rax
-    jmp .fin
+    ; Lista vacía
+    mov [rbx], rax          ; list->first = nuevo
+    mov [rbx + 8], rax      ; list->last = nuevo
+    jmp .done
 
-.al_final:
+.append:
     mov rcx, [rbx + 8]      ; rcx = list->last
-
-    ; Enlazamos nodo nuevo al final
     mov [rax + 8], rcx      ; nuevo->prev = last
     mov [rcx], rax          ; last->next = nuevo
     mov [rbx + 8], rax      ; list->last = nuevo
 
-.fin:
+.done:
+    pop rbx
     ret
 
 ; ------------------------------------------------
-
+; string_proc_list_concat_asm
+; rdi = lista, rsi = tipo, rdx = hash base
+; Devuelve nuevo string concatenado
+; ------------------------------------------------
 string_proc_list_concat_asm:
     push rbp
     mov rbp, rsp
-    sub rsp, 48             ; Reservamos espacio local
+    push rbx
+    sub rsp, 32             ; espacio para variables locales y stack alignment
 
-    ; Guardamos parámetros en la pila
+    ; Guardar parámetros
     mov [rsp], rdi          ; lista
-    mov [rsp+8], rsi        ; tipo
-    mov [rsp+16], rdx       ; hash original
+    mov [rsp + 8], sil      ; tipo (guardado como byte)
+    mov [rsp + 16], rdx     ; hash base
 
-    ; Copiamos el hash base a nueva memoria
+    ; strlen(hash base)
     mov rdi, rdx
     call strlen
-    lea rdi, [rax+1]
+    add rax, 1              ; +1 para '\0'
+    mov rdi, rax
     call malloc
     test rax, rax
-    jz .devolver_null
+    jz .return_null
 
-    ; Copiamos el hash base
-    mov [rsp+24], rax       ; guardamos hash_concat
+    mov [rsp + 24], rax     ; guardar puntero hash_concat
+
+    ; strcpy(hash_concat, hash base)
     mov rdi, rax
-    mov rsi, [rsp+16]
+    mov rsi, [rsp + 16]
     call strcpy
 
-    ; Iteramos por la lista
+    ; Iterar sobre la lista
     mov rdi, [rsp]          ; lista
-    mov rcx, [rdi]          ; current_node = list->first
-    mov [rsp+32], rcx
+    mov rbx, [rdi]          ; current = list->first
 
-.ciclo:
-    mov rcx, [rsp+32]       ; current_node
-    test rcx, rcx
-    jz .fin                 ; Si es NULL, fin del loop
+.loop:
+    test rbx, rbx
+    jz .end
 
-    ; Verificamos si el tipo coincide
-    mov dl, [rcx+16]        ; current_node->type
-    cmp dl, byte [rsp+8]
-    jne .nodo_siguiente
+    mov al, [rsp + 8]       ; tipo a buscar
+    cmp al, [rbx + 16]      ; compara con current->type
+    jne .next
 
-    ; Concatenamos el hash del nodo actual
-    mov rdi, [rsp+24]       ; hash_concat actual
-    mov rsi, [rcx+24]       ; current_node->hash
-    call str_concat         ; RAX = nuevo string concatenado
+    ; Concatenar hash_concat + current->hash
+    mov rdi, [rsp + 24]     ; actual
+    mov rsi, [rbx + 24]     ; current->hash
+    call str_concat         ; rax = nuevo string
 
-    ; Liberamos la versión vieja de hash_concat
-    mov rdi, [rsp+24]
-    mov [rsp+24], rax       ; actualizamos puntero
+    ; Liberar viejo string
+    mov rdi, [rsp + 24]
     call free
+    mov [rsp + 24], rax     ; actualizar nuevo string
 
-.nodo_siguiente:
-    mov rcx, [rsp+32]
-    mov rcx, [rcx]          ; siguiente nodo
-    mov [rsp+32], rcx
-    jmp .ciclo
+.next:
+    mov rbx, [rbx]          ; siguiente nodo
+    jmp .loop
 
-.fin:
-    mov rax, [rsp+24]       ; devolvemos hash_concat
-    add rsp, 48
+.end:
+    mov rax, [rsp + 24]     ; retornar nuevo string
+    add rsp, 32
+    pop rbx
     pop rbp
     ret
 
-.devolver_null:
+.return_null:
     xor rax, rax
-    add rsp, 48
+    add rsp, 32
+    pop rbx
     pop rbp
     ret
