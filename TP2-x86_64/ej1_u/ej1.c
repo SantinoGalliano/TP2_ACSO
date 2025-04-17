@@ -20,7 +20,7 @@ string_proc_node* string_proc_node_create(uint8_t type, char* hash){
 
 void string_proc_list_add_node(string_proc_list* list, uint8_t type, char* hash){
 	string_proc_node* node = string_proc_node_create(type, hash);
-	if (node == NULL) return;
+	if (node == NULL) return NULL;
 	if (list->first == NULL) {
 		list->first = node;
 		list->last = node;
